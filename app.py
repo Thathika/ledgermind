@@ -4,6 +4,8 @@ import pandas as pd
 from reconcile import reconcile
 from ai_resolver import resolve_ambiguous
 from anomaly_detector import flag_candidates, explain_anomaly
+from data_cleaning import clean_data
+from forecast import calculate_runway
 
 
 st.set_page_config(
@@ -49,34 +51,188 @@ if st.button("Run Reconciliation"):
 
     else:
 
-        ledger_df = pd.read_csv(
+        raw_ledger_df = pd.read_csv(
             ledger_file,
             dtype={"transaction_id": str}
         )
 
-        bank_df = pd.read_csv(
+        raw_bank_df = pd.read_csv(
             bank_file,
             dtype={"transaction_id": str}
         )
 
-        result = reconcile(
-            ledger_df,
-            bank_df
-        )
 
-        st.session_state.reconciliation_result = result
-        st.session_state.ledger_df = ledger_df
-        st.session_state.bank_df = bank_df
-
-        st.session_state.ai_results = {}
-        st.session_state.anomaly_results = {}
-
-        st.success(
-            "Reconciliation complete."
+        ledger_df, ledger_report = clean_data(
+            raw_ledger_df,
+            [
+                "transaction_id",
+                "date",
+                "description",
+                "amount"
+            ],
+            label="ledger"
         )
 
 
-if "reconciliation_result" in st.session_state:
+        bank_df, bank_report = clean_data(
+            raw_bank_df,
+            [
+                "transaction_id",
+                "date",
+                "amount",
+                "bank_ref"
+            ],
+            label="bank statement"
+        )
+
+
+        st.session_state.ledger_report = ledger_report
+        st.session_state.bank_report = bank_report
+
+
+        if ledger_df.empty or bank_df.empty:
+
+            st.session_state.reconciliation_result = None
+
+            st.error(
+                "One of the files is missing required columns "
+                "or has no valid rows after cleaning."
+            )
+
+        else:
+
+            result = reconcile(
+                ledger_df,
+                bank_df
+            )
+
+            st.session_state.reconciliation_result = result
+
+            st.session_state.ledger_df = ledger_df
+            st.session_state.bank_df = bank_df
+
+            st.session_state.ai_results = {}
+            st.session_state.anomaly_results = {}
+
+            st.success(
+                "Data cleaned and reconciliation complete."
+            )
+
+
+if "ledger_report" in st.session_state:
+
+    st.divider()
+
+    st.subheader(
+        "Data Quality Report"
+    )
+
+    col1, col2 = st.columns(2)
+
+    with col1:
+
+        st.markdown("### Ledger")
+
+        st.write(
+            f"Rows before cleaning: "
+            f"{st.session_state.ledger_report['rows_before']}"
+        )
+
+        st.write(
+            f"Rows after cleaning: "
+            f"{st.session_state.ledger_report['rows_after']}"
+        )
+
+        st.write(
+            f"Invalid dates: "
+            f"{st.session_state.ledger_report['invalid_dates']}"
+        )
+
+        st.write(
+            f"Invalid amounts: "
+            f"{st.session_state.ledger_report['invalid_amounts']}"
+        )
+
+        st.write(
+            f"Missing essential fields: "
+            f"{st.session_state.ledger_report['missing_essential_fields']}"
+        )
+
+        st.write(
+            f"Duplicates removed: "
+            f"{st.session_state.ledger_report['duplicates_removed']}"
+        )
+
+        if st.session_state.ledger_report["missing_columns"]:
+
+            st.error(
+                "Missing columns: "
+                + ", ".join(
+                    st.session_state.ledger_report["missing_columns"]
+                )
+            )
+
+        else:
+
+            st.success(
+                "Ledger data passed validation."
+            )
+
+
+    with col2:
+
+        st.markdown("### Bank Statement")
+
+        st.write(
+            f"Rows before cleaning: "
+            f"{st.session_state.bank_report['rows_before']}"
+        )
+
+        st.write(
+            f"Rows after cleaning: "
+            f"{st.session_state.bank_report['rows_after']}"
+        )
+
+        st.write(
+            f"Invalid dates: "
+            f"{st.session_state.bank_report['invalid_dates']}"
+        )
+
+        st.write(
+            f"Invalid amounts: "
+            f"{st.session_state.bank_report['invalid_amounts']}"
+        )
+
+        st.write(
+            f"Missing essential fields: "
+            f"{st.session_state.bank_report['missing_essential_fields']}"
+        )
+
+        st.write(
+            f"Duplicates removed: "
+            f"{st.session_state.bank_report['duplicates_removed']}"
+        )
+
+        if st.session_state.bank_report["missing_columns"]:
+
+            st.error(
+                "Missing columns: "
+                + ", ".join(
+                    st.session_state.bank_report["missing_columns"]
+                )
+            )
+
+        else:
+
+            st.success(
+                "Bank statement passed validation."
+            )
+
+
+if (
+    "reconciliation_result" in st.session_state
+    and st.session_state.reconciliation_result is not None
+):
 
     result = st.session_state.reconciliation_result
 
@@ -184,6 +340,7 @@ if "reconciliation_result" in st.session_state:
 
 
             ledger_row = ledger_matches.iloc[0]
+
             bank_row = bank_matches.iloc[0]
 
 
@@ -330,15 +487,18 @@ if "reconciliation_result" in st.session_state:
                                     transaction_key
                                 ] = {
                                     "status": "success",
+
                                     "same_transaction":
                                         ai_result.get(
                                             "same_transaction"
                                         ),
+
                                     "confidence":
                                         ai_result.get(
                                             "confidence",
                                             0
                                         ),
+
                                     "reasoning":
                                         ai_result.get(
                                             "reasoning",
@@ -359,9 +519,13 @@ if "reconciliation_result" in st.session_state:
                                     transaction_key
                                 ] = {
                                     "status": "error",
+
                                     "same_transaction": None,
+
                                     "confidence": 0,
-                                    "reasoning": error_message
+
+                                    "reasoning":
+                                        error_message
                                 }
 
 
@@ -522,11 +686,13 @@ if "reconciliation_result" in st.session_state:
                                     anomaly_key
                                 ] = {
                                     "status": "success",
+
                                     "confidence":
                                         ai_result.get(
                                             "confidence",
                                             0
                                         ),
+
                                     "explanation":
                                         ai_result.get(
                                             "explanation",
@@ -547,13 +713,100 @@ if "reconciliation_result" in st.session_state:
                                     anomaly_key
                                 ] = {
                                     "status": "error",
+
                                     "confidence": 0,
+
                                     "explanation":
                                         error_message
                                 }
 
 
                                 st.rerun()
+
+
+    st.divider()
+
+
+    st.subheader(
+        "Cash Runway Forecast"
+    )
+
+
+    st.info(
+        "This forecast uses the transaction history to calculate "
+        "the current balance, average daily cash flow, and estimated "
+        "cash runway."
+    )
+
+
+    try:
+
+        runway = calculate_runway(
+            ledger_df
+        )
+
+
+        col1, col2, col3 = st.columns(3)
+
+
+        col1.metric(
+            "Current Balance",
+            f"₹{runway['current_balance']:,.0f}"
+        )
+
+
+        col2.metric(
+            "Avg Daily Burn",
+            f"₹{runway['daily_burn']:,.0f}"
+        )
+
+
+        if runway["runway_days"] is None:
+
+            col3.metric(
+                "Runway",
+                "Cash flow positive"
+            )
+
+        else:
+
+            col3.metric(
+                "Runway",
+                f"{runway['runway_days']} days"
+            )
+
+
+        st.markdown(
+            "### 90-Day Cash Projection"
+        )
+
+
+        chart_df = (
+            runway["projection_df"]
+            .set_index("date")
+        )
+
+
+        st.line_chart(
+            chart_df
+        )
+
+
+        st.write(
+            f"**Average daily net flow:** "
+            f"₹{runway['avg_daily_net']:,.2f}"
+        )
+
+
+    except Exception as e:
+
+        st.error(
+            "Could not generate the cash runway forecast."
+        )
+
+        st.write(
+            f"Reason: {str(e)}"
+        )
 
 
     st.divider()
