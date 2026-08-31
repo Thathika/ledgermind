@@ -1,11 +1,13 @@
 import streamlit as st
 import pandas as pd
+import plotly.graph_objects as go
 
 from reconcile import reconcile
 from ai_resolver import resolve_ambiguous
 from anomaly_detector import flag_candidates, explain_anomaly
 from data_cleaning import clean_data
 from forecast import calculate_runway
+from controller import build_summary, generate_briefing
 
 
 st.set_page_config(
@@ -26,7 +28,6 @@ ledger_file = st.file_uploader(
     type="csv"
 )
 
-
 bank_file = st.file_uploader(
     "Upload bank statement CSV",
     type="csv"
@@ -36,9 +37,11 @@ bank_file = st.file_uploader(
 if "ai_results" not in st.session_state:
     st.session_state.ai_results = {}
 
-
 if "anomaly_results" not in st.session_state:
     st.session_state.anomaly_results = {}
+
+if "briefing" not in st.session_state:
+    st.session_state.briefing = None
 
 
 if st.button("Run Reconciliation"):
@@ -61,7 +64,6 @@ if st.button("Run Reconciliation"):
             dtype={"transaction_id": str}
         )
 
-
         ledger_df, ledger_report = clean_data(
             raw_ledger_df,
             [
@@ -72,7 +74,6 @@ if st.button("Run Reconciliation"):
             ],
             label="ledger"
         )
-
 
         bank_df, bank_report = clean_data(
             raw_bank_df,
@@ -85,14 +86,15 @@ if st.button("Run Reconciliation"):
             label="bank statement"
         )
 
-
         st.session_state.ledger_report = ledger_report
         st.session_state.bank_report = bank_report
-
 
         if ledger_df.empty or bank_df.empty:
 
             st.session_state.reconciliation_result = None
+            st.session_state.briefing = None
+            st.session_state.ai_results = {}
+            st.session_state.anomaly_results = {}
 
             st.error(
                 "One of the files is missing required columns "
@@ -107,12 +109,12 @@ if st.button("Run Reconciliation"):
             )
 
             st.session_state.reconciliation_result = result
-
             st.session_state.ledger_df = ledger_df
             st.session_state.bank_df = bank_df
 
             st.session_state.ai_results = {}
             st.session_state.anomaly_results = {}
+            st.session_state.briefing = None
 
             st.success(
                 "Data cleaned and reconciliation complete."
@@ -178,7 +180,6 @@ if "ledger_report" in st.session_state:
                 "Ledger data passed validation."
             )
 
-
     with col2:
 
         st.markdown("### Bank Statement")
@@ -240,31 +241,94 @@ if (
     bank_df = st.session_state.bank_df
 
 
-    col1, col2, col3, col4 = st.columns(4)
+    candidates = flag_candidates(
+        ledger_df,
+        bank_df
+    )
 
+
+    try:
+
+        runway = calculate_runway(
+            ledger_df
+        )
+
+        runway_error = None
+
+    except Exception as e:
+
+        runway = None
+        runway_error = str(e)
+
+
+    col1, col2, col3, col4 = st.columns(4)
 
     col1.metric(
         "Matched",
         len(result["matched"])
     )
 
-
     col2.metric(
         "Ambiguous",
         len(result["ambiguous"])
     )
-
 
     col3.metric(
         "Unmatched (ledger)",
         len(result["unmatched_ledger"])
     )
 
-
     col4.metric(
         "Unmatched (bank)",
         len(result["unmatched_bank"])
     )
+
+
+    st.divider()
+
+
+    st.subheader(
+        "Financial Briefing"
+    )
+
+
+    if runway is None:
+
+        st.warning(
+            "Financial briefing unavailable because the "
+            "cash runway forecast could not be generated."
+        )
+
+        st.write(
+            f"Reason: {runway_error}"
+        )
+
+    else:
+
+        st.info(
+            "The Controller uses Gemini to generate this financial "
+            "briefing from the reconciliation, anomaly, and cash-flow results."
+        )
+
+        if st.session_state.briefing is None:
+
+            with st.spinner(
+                "Controller agent is synthesizing the briefing..."
+            ):
+
+                summary = build_summary(
+                    result,
+                    len(candidates),
+                    runway
+                )
+
+                st.session_state.briefing = generate_briefing(
+                    summary
+                )
+
+        st.info(
+            st.session_state.briefing
+        )
 
 
     st.divider()
@@ -298,9 +362,8 @@ if (
 
 
     st.info(
-        "Gemini is called only when you click "
-        "'Review with AI'. This avoids unnecessary "
-        "API requests."
+        "Gemini is used for detailed transaction review only "
+        "when you click 'Review with AI'."
     )
 
 
@@ -321,7 +384,6 @@ if (
                 == str(item["ledger_id"])
             ]
 
-
             bank_matches = bank_df[
                 bank_df["bank_ref"].astype(str)
                 == str(item["bank_ref"])
@@ -340,7 +402,6 @@ if (
 
 
             ledger_row = ledger_matches.iloc[0]
-
             bank_row = bank_matches.iloc[0]
 
 
@@ -354,7 +415,6 @@ if (
             ):
 
                 col1, col2 = st.columns(2)
-
 
                 with col1:
 
@@ -379,7 +439,6 @@ if (
                         f"**Amount:** "
                         f"₹{ledger_row['amount']}"
                     )
-
 
                 with col2:
 
@@ -439,7 +498,6 @@ if (
                             f"{ai_result['confidence']}%"
                         )
 
-
                         st.write(
                             f"**AI Reasoning:** "
                             f"{ai_result['reasoning']}"
@@ -452,12 +510,10 @@ if (
                             "Gemini is temporarily unavailable."
                         )
 
-
                         st.write(
                             f"**Reason:** "
                             f"{ai_result['reasoning']}"
                         )
-
 
                         st.info(
                             "You can try the AI review again later."
@@ -486,6 +542,7 @@ if (
                                 st.session_state.ai_results[
                                     transaction_key
                                 ] = {
+
                                     "status": "success",
 
                                     "same_transaction":
@@ -512,20 +569,17 @@ if (
 
                             except Exception as e:
 
-                                error_message = str(e)
-
-
                                 st.session_state.ai_results[
                                     transaction_key
                                 ] = {
+
                                     "status": "error",
 
                                     "same_transaction": None,
 
                                     "confidence": 0,
 
-                                    "reasoning":
-                                        error_message
+                                    "reasoning": str(e)
                                 }
 
 
@@ -542,13 +596,8 @@ if (
 
     st.info(
         "Anomalies are detected using rule-based checks first. "
-        "Gemini is called only when you click 'Review with AI'."
-    )
-
-
-    candidates = flag_candidates(
-        ledger_df,
-        bank_df
+        "Gemini provides a detailed explanation only when you click "
+        "'Review with AI'."
     )
 
 
@@ -575,7 +624,6 @@ if (
 
             reason = candidate["reason"]
 
-
             anomaly_key = (
                 f"anomaly_{bank_ref}"
             )
@@ -586,7 +634,6 @@ if (
             ):
 
                 col1, col2 = st.columns(2)
-
 
                 with col1:
 
@@ -599,7 +646,6 @@ if (
                         f"**Date:** "
                         f"{row['date']}"
                     )
-
 
                 with col2:
 
@@ -632,12 +678,10 @@ if (
                             "AI anomaly review completed."
                         )
 
-
                         st.write(
                             f"**AI Confidence:** "
                             f"{anomaly_result['confidence']}%"
                         )
-
 
                         st.write(
                             f"**AI Explanation:** "
@@ -651,12 +695,10 @@ if (
                             "Gemini is temporarily unavailable."
                         )
 
-
                         st.write(
                             f"**Reason:** "
                             f"{anomaly_result['explanation']}"
                         )
-
 
                         st.info(
                             "You can try the AI review again later."
@@ -685,6 +727,7 @@ if (
                                 st.session_state.anomaly_results[
                                     anomaly_key
                                 ] = {
+
                                     "status": "success",
 
                                     "confidence":
@@ -706,18 +749,15 @@ if (
 
                             except Exception as e:
 
-                                error_message = str(e)
-
-
                                 st.session_state.anomaly_results[
                                     anomaly_key
                                 ] = {
+
                                     "status": "error",
 
                                     "confidence": 0,
 
-                                    "explanation":
-                                        error_message
+                                    "explanation": str(e)
                                 }
 
 
@@ -739,12 +779,17 @@ if (
     )
 
 
-    try:
+    if runway is None:
 
-        runway = calculate_runway(
-            ledger_df
+        st.error(
+            "Could not generate the cash runway forecast."
         )
 
+        st.write(
+            f"Reason: {runway_error}"
+        )
+
+    else:
 
         col1, col2, col3 = st.columns(3)
 
@@ -755,10 +800,20 @@ if (
         )
 
 
-        col2.metric(
-            "Avg Daily Burn",
-            f"₹{runway['daily_burn']:,.0f}"
-        )
+        # FIXED: Show Net Flow when cash flow is positive
+        if runway["avg_daily_net"] >= 0:
+
+            col2.metric(
+                "Avg Daily Net Flow",
+                f"+₹{runway['avg_daily_net']:,.0f}"
+            )
+
+        else:
+
+            col2.metric(
+                "Avg Daily Burn",
+                f"₹{runway['daily_burn']:,.0f}"
+            )
 
 
         if runway["runway_days"] is None:
@@ -781,31 +836,48 @@ if (
         )
 
 
-        chart_df = (
-            runway["projection_df"]
-            .set_index("date")
+        fig = go.Figure()
+
+
+        fig.add_trace(
+            go.Scatter(
+                x=runway["projection_df"]["date"],
+                y=runway["projection_df"]["projected_balance"],
+                mode="lines",
+                name="Projected balance",
+                line=dict(width=3)
+            )
         )
 
 
-        st.line_chart(
-            chart_df
+        fig.update_layout(
+            title="90-day cash projection",
+            xaxis_title="Date",
+            yaxis_title="Balance (₹)",
+            yaxis=dict(
+                rangemode="tozero"
+                if runway["current_balance"] < 500000
+                else "normal"
+            ),
+            height=350,
+            margin=dict(
+                l=40,
+                r=20,
+                t=40,
+                b=40
+            )
+        )
+
+
+        st.plotly_chart(
+            fig,
+            use_container_width=True
         )
 
 
         st.write(
             f"**Average daily net flow:** "
             f"₹{runway['avg_daily_net']:,.2f}"
-        )
-
-
-    except Exception as e:
-
-        st.error(
-            "Could not generate the cash runway forecast."
-        )
-
-        st.write(
-            f"Reason: {str(e)}"
         )
 
 
