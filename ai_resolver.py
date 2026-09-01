@@ -16,7 +16,7 @@ if not api_key:
 client = genai.Client(api_key=api_key)
 
 
-MODEL_NAME = "gemini-3.7-flash"
+MODEL_NAME = "gemini-3.6-flash"
 
 
 def extract_json(text):

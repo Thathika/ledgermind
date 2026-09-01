@@ -72,13 +72,14 @@ A rule-based system flagged this bank transaction for review.
 
 Transaction ID: {candidate_row['transaction_id']}
 Date: {candidate_row['date']}
-Amount: {candidate_row['amount']}
+Amount: ₹{candidate_row['amount']}
 Bank Reference: {candidate_row['bank_ref']}
 
 Reason flagged:
 {reason}
 
 Explain briefly why a finance controller should review this transaction.
+Always refer to the currency as ₹ (Indian Rupees) in your explanation — never use $ or USD.
 
 Also give a confidence score from 0 to 100 indicating how likely
 this is to be a genuine financial anomaly.

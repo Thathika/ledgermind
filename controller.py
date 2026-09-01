@@ -5,8 +5,14 @@ import google.generativeai as genai
 
 load_dotenv()
 
-genai.configure(api_key=os.getenv("GEMINI_API_KEY"))
-model = genai.GenerativeModel("gemini-2.5-flash")
+api_key = os.getenv("GEMINI_API_KEY")
+
+if not api_key:
+    raise ValueError("GEMINI_API_KEY is not set in the .env file.")
+
+genai.configure(api_key=api_key)
+
+model = genai.GenerativeModel("gemini-3.6-flash")
 
 
 def build_summary(reconciliation_result, anomaly_count, forecast_result):
@@ -41,8 +47,8 @@ def _fallback_briefing(summary):
     )
 
     unmatched_total = (
-        summary["unmatched_ledger"] +
-        summary["unmatched_bank"]
+        summary["unmatched_ledger"]
+        + summary["unmatched_bank"]
     )
 
     return (
@@ -95,8 +101,8 @@ Do not invent, estimate, or calculate any numbers that are not provided above.
 Respond with ONLY the briefing text.
 Do not include headings.
 Do not include markdown formatting.
-Do not include a preamble."""
-
+Do not include a preamble.
+"""
 
     try:
         response = model.generate_content(prompt)
@@ -115,29 +121,206 @@ Do not include a preamble."""
         return _fallback_briefing(summary)
 
 
+def generate_change_narrative(previous_summary, current_summary):
+    """
+    Compare the previous dashboard run with the current run
+    and generate a short plain-English explanation of what changed.
+    """
+
+    if previous_summary is None:
+        return "This is the first recorded run, so there is no previous run to compare with."
+
+    changes = []
+
+    fields = [
+        ("current_balance", "cash balance"),
+        ("matched", "matched transactions"),
+        ("ambiguous", "ambiguous transactions"),
+        ("unmatched_ledger", "unmatched ledger transactions"),
+        ("unmatched_bank", "unmatched bank transactions"),
+        ("anomalies_flagged", "anomalies flagged"),
+        ("avg_daily_net", "average daily net cash flow"),
+        ("runway_days", "cash runway")
+    ]
+
+    for field, label in fields:
+
+        previous = previous_summary.get(field)
+        current = current_summary.get(field)
+
+        if previous == current:
+            continue
+
+        if field == "current_balance":
+
+            if previous is None or current is None:
+                changes.append(
+                    f"{label.capitalize()} changed from "
+                    f"{previous} to {current}."
+                )
+            else:
+                difference = current - previous
+
+                changes.append(
+                    f"Cash balance changed from "
+                    f"₹{previous:,.0f} to ₹{current:,.0f}, "
+                    f"a change of ₹{difference:+,.0f}."
+                )
+
+        elif field == "avg_daily_net":
+
+            if previous is None or current is None:
+                changes.append(
+                    f"{label.capitalize()} changed from "
+                    f"{previous} to {current}."
+                )
+            else:
+                difference = current - previous
+
+                changes.append(
+                    f"Average daily net cash flow changed from "
+                    f"₹{previous:,.0f} to ₹{current:,.0f}, "
+                    f"a change of ₹{difference:+,.0f}."
+                )
+
+        elif field == "runway_days":
+
+            if previous is None and current is None:
+                continue
+
+            if previous is None:
+                changes.append(
+                    f"Cash runway changed from unavailable "
+                    f"to {current} days."
+                )
+
+            elif current is None:
+                changes.append(
+                    f"Cash runway changed from "
+                    f"{previous} days to no immediate runway risk."
+                )
+
+            else:
+                difference = current - previous
+
+                changes.append(
+                    f"Cash runway changed from "
+                    f"{previous} days to {current} days, "
+                    f"a change of {difference:+} days."
+                )
+
+        else:
+
+            if previous is None or current is None:
+                changes.append(
+                    f"{label.capitalize()} changed from "
+                    f"{previous} to {current}."
+                )
+            else:
+                difference = current - previous
+
+                changes.append(
+                    f"{label.capitalize()} changed from "
+                    f"{previous} to {current}, "
+                    f"a change of {difference:+}."
+                )
+
+    if not changes:
+        return "No changes were detected compared with the previous run."
+
+    detected_changes = "\n".join(
+        f"- {change}"
+        for change in changes
+    )
+
+    prompt = f"""You are a financial controller explaining what changed between two dashboard runs.
+
+Previous run:
+{json.dumps(previous_summary, indent=2)}
+
+Current run:
+{json.dumps(current_summary, indent=2)}
+
+Detected changes:
+{detected_changes}
+
+Write a short explanation for a founder with no accounting background.
+
+Requirements:
+- Explain the most important changes first.
+- Use plain English.
+- Use only the numbers provided.
+- Do not invent any information.
+- Do not make unsupported assumptions.
+- Explain whether the changes are positive, negative, or require attention when this is clear from the numbers.
+- Keep the response to 3-5 sentences.
+- Do not use accounting jargon.
+- Do not include a heading.
+- Do not use markdown.
+- Respond with ONLY the explanation.
+"""
+
+    try:
+        response = model.generate_content(prompt)
+
+        if response and response.text:
+            text = response.text.strip()
+
+            if text:
+                return text
+
+    except Exception:
+        pass
+
+    return " ".join(changes)
+
+
 if __name__ == "__main__":
-    fake_reconciliation = {
-        "matched": [0] * 182,
-        "ambiguous": [0] * 10,
-        "unmatched_ledger": [0] * 8,
-        "unmatched_bank": [0] * 9
+
+    fake_previous_summary = {
+        "matched": 180,
+        "ambiguous": 12,
+        "unmatched_ledger": 8,
+        "unmatched_bank": 9,
+        "anomalies_flagged": 15,
+        "current_balance": 2800000,
+        "avg_daily_net": 42000,
+        "daily_burn": 0,
+        "runway_days": None
     }
 
-    fake_forecast = {
+    fake_current_summary = {
+        "matched": 182,
+        "ambiguous": 10,
+        "unmatched_ledger": 8,
+        "unmatched_bank": 9,
+        "anomalies_flagged": 17,
         "current_balance": 2863116.01,
         "avg_daily_net": 48527.39,
         "daily_burn": 0,
         "runway_days": None
     }
 
-    summary = build_summary(
-        fake_reconciliation,
-        17,
-        fake_forecast
+    print("Previous Summary:")
+    print(
+        json.dumps(
+            fake_previous_summary,
+            indent=2
+        )
     )
 
-    print("Summary:")
-    print(json.dumps(summary, indent=2))
+    print("\nCurrent Summary:")
+    print(
+        json.dumps(
+            fake_current_summary,
+            indent=2
+        )
+    )
 
-    print("\nBriefing:")
-    print(generate_briefing(summary))
+    print("\nWhat Changed:")
+    print(
+        generate_change_narrative(
+            fake_previous_summary,
+            fake_current_summary
+        )
+    )

@@ -7,7 +7,22 @@ from ai_resolver import resolve_ambiguous
 from anomaly_detector import flag_candidates, explain_anomaly
 from data_cleaning import clean_data
 from forecast import calculate_runway
+
 from controller import build_summary, generate_briefing
+
+
+try:
+    from controller import generate_diff_narrative
+except ImportError:
+    from controller import generate_change_narrative as generate_diff_narrative
+
+from alerts import evaluate_alerts
+
+from history import (
+    save_run,
+    get_previous_run,
+    get_run_count
+)
 
 
 st.set_page_config(
@@ -43,6 +58,12 @@ if "anomaly_results" not in st.session_state:
 if "briefing" not in st.session_state:
     st.session_state.briefing = None
 
+if "diff_narrative" not in st.session_state:
+    st.session_state.diff_narrative = None
+
+if "history_save_pending" not in st.session_state:
+    st.session_state.history_save_pending = False
+
 
 if st.button("Run Reconciliation"):
 
@@ -64,6 +85,7 @@ if st.button("Run Reconciliation"):
             dtype={"transaction_id": str}
         )
 
+
         ledger_df, ledger_report = clean_data(
             raw_ledger_df,
             [
@@ -74,6 +96,7 @@ if st.button("Run Reconciliation"):
             ],
             label="ledger"
         )
+
 
         bank_df, bank_report = clean_data(
             raw_bank_df,
@@ -86,15 +109,19 @@ if st.button("Run Reconciliation"):
             label="bank statement"
         )
 
+
         st.session_state.ledger_report = ledger_report
         st.session_state.bank_report = bank_report
+
 
         if ledger_df.empty or bank_df.empty:
 
             st.session_state.reconciliation_result = None
             st.session_state.briefing = None
+            st.session_state.diff_narrative = None
             st.session_state.ai_results = {}
             st.session_state.anomaly_results = {}
+            st.session_state.history_save_pending = False
 
             st.error(
                 "One of the files is missing required columns "
@@ -115,6 +142,9 @@ if st.button("Run Reconciliation"):
             st.session_state.ai_results = {}
             st.session_state.anomaly_results = {}
             st.session_state.briefing = None
+            st.session_state.diff_narrative = None
+
+            st.session_state.history_save_pending = True
 
             st.success(
                 "Data cleaned and reconciliation complete."
@@ -125,11 +155,10 @@ if "ledger_report" in st.session_state:
 
     st.divider()
 
-    st.subheader(
-        "Data Quality Report"
-    )
+    st.subheader("Data Quality Report")
 
     col1, col2 = st.columns(2)
+
 
     with col1:
 
@@ -165,6 +194,7 @@ if "ledger_report" in st.session_state:
             f"{st.session_state.ledger_report['duplicates_removed']}"
         )
 
+
         if st.session_state.ledger_report["missing_columns"]:
 
             st.error(
@@ -179,6 +209,7 @@ if "ledger_report" in st.session_state:
             st.success(
                 "Ledger data passed validation."
             )
+
 
     with col2:
 
@@ -213,6 +244,7 @@ if "ledger_report" in st.session_state:
             f"Duplicates removed: "
             f"{st.session_state.bank_report['duplicates_removed']}"
         )
+
 
         if st.session_state.bank_report["missing_columns"]:
 
@@ -261,7 +293,12 @@ if (
         runway_error = str(e)
 
 
+    # ============================================================
+    # TOP RECONCILIATION METRICS
+    # ============================================================
+
     col1, col2, col3, col4 = st.columns(4)
+
 
     col1.metric(
         "Matched",
@@ -284,12 +321,67 @@ if (
     )
 
 
+    # ============================================================
+    # DAY 7 - PROACTIVE ALERTS
+    # ============================================================
+
     st.divider()
 
+    st.subheader("Alerts")
 
-    st.subheader(
-        "Financial Briefing"
-    )
+
+    if runway is not None:
+
+        alert_list = evaluate_alerts(
+            result,
+            len(candidates),
+            runway
+        )
+
+
+        if len(alert_list) > 0:
+
+            for alert in alert_list:
+
+                if alert["severity"] == "critical":
+
+                    st.error(
+                        f"🔴 {alert['message']}"
+                    )
+
+                elif alert["severity"] == "warning":
+
+                    st.warning(
+                        f"🟡 {alert['message']}"
+                    )
+
+                else:
+
+                    st.info(
+                        f"🔵 {alert['message']}"
+                    )
+
+        else:
+
+            st.success(
+                "No alerts — books look healthy."
+            )
+
+    else:
+
+        st.warning(
+            "Alerts unavailable because the cash runway "
+            "forecast could not be generated."
+        )
+
+
+    # ============================================================
+    # FINANCIAL BRIEFING
+    # ============================================================
+
+    st.divider()
+
+    st.subheader("Financial Briefing")
 
 
     if runway is None:
@@ -310,6 +402,7 @@ if (
             "briefing from the reconciliation, anomaly, and cash-flow results."
         )
 
+
         if st.session_state.briefing is None:
 
             with st.spinner(
@@ -326,13 +419,84 @@ if (
                     summary
                 )
 
+
         st.info(
             st.session_state.briefing
         )
 
 
+    # ============================================================
+    # DAY 8 - WHAT CHANGED SINCE LAST RUN
+    # ============================================================
+
     st.divider()
 
+    st.subheader(
+        "What Changed Since Last Run"
+    )
+
+
+    if runway is None:
+
+        st.warning(
+            "What Changed is unavailable because the "
+            "cash runway forecast could not be generated."
+        )
+
+    else:
+
+        current_summary = build_summary(
+            result,
+            len(candidates),
+            runway
+        )
+
+
+        previous_summary = get_previous_run()
+
+
+        if previous_summary is None:
+
+            st.info(
+                f"This is run #{get_run_count() + 1} — "
+                "no previous run to compare against yet."
+            )
+
+        else:
+
+            if st.session_state.diff_narrative is None:
+
+                with st.spinner(
+                    "Controller is comparing this run with the previous run..."
+                ):
+
+                    st.session_state.diff_narrative = (
+                        generate_diff_narrative(
+                            current_summary,
+                            previous_summary
+                        )
+                    )
+
+
+            st.info(
+                st.session_state.diff_narrative
+            )
+
+
+        if st.session_state.history_save_pending:
+
+            save_run(
+                current_summary
+            )
+
+            st.session_state.history_save_pending = False
+
+
+    # ============================================================
+    # MATCHED TRANSACTIONS
+    # ============================================================
+
+    st.divider()
 
     st.subheader(
         "Matched transactions"
@@ -343,7 +507,7 @@ if (
 
         st.dataframe(
             pd.DataFrame(result["matched"]),
-            use_container_width=True
+            width="stretch"
         )
 
     else:
@@ -353,8 +517,11 @@ if (
         )
 
 
-    st.divider()
+    # ============================================================
+    # AMBIGUOUS TRANSACTIONS - AI REVIEW
+    # ============================================================
 
+    st.divider()
 
     st.subheader(
         "Ambiguous transactions — AI review"
@@ -383,6 +550,7 @@ if (
                 ledger_df["transaction_id"].astype(str)
                 == str(item["ledger_id"])
             ]
+
 
             bank_matches = bank_df[
                 bank_df["bank_ref"].astype(str)
@@ -414,7 +582,10 @@ if (
                 f"{item['ledger_id']} ↔ {item['bank_ref']}"
             ):
 
+                # SOURCE DATA
+
                 col1, col2 = st.columns(2)
+
 
                 with col1:
 
@@ -440,6 +611,7 @@ if (
                         f"₹{ledger_row['amount']}"
                     )
 
+
                 with col2:
 
                     st.markdown("### Bank")
@@ -459,6 +631,8 @@ if (
                         f"₹{bank_row['amount']}"
                     )
 
+
+                # AUDIT TRAIL
 
                 st.divider()
 
@@ -493,9 +667,39 @@ if (
                             )
 
 
+                        confidence = ai_result.get(
+                            "confidence",
+                            0
+                        )
+
+
+                        try:
+
+                            confidence = float(
+                                confidence
+                            )
+
+                        except (TypeError, ValueError):
+
+                            confidence = 0
+
+
+                        confidence = max(
+                            0,
+                            min(
+                                100,
+                                confidence
+                            )
+                        )
+
+
                         st.write(
-                            f"**Confidence:** "
-                            f"{ai_result['confidence']}%"
+                            f"**AI Confidence:** "
+                            f"{confidence:.0f}%"
+                        )
+
+                        st.progress(
+                            confidence / 100
                         )
 
                         st.write(
@@ -542,20 +746,16 @@ if (
                                 st.session_state.ai_results[
                                     transaction_key
                                 ] = {
-
                                     "status": "success",
-
                                     "same_transaction":
                                         ai_result.get(
                                             "same_transaction"
                                         ),
-
                                     "confidence":
                                         ai_result.get(
                                             "confidence",
                                             0
                                         ),
-
                                     "reasoning":
                                         ai_result.get(
                                             "reasoning",
@@ -572,13 +772,9 @@ if (
                                 st.session_state.ai_results[
                                     transaction_key
                                 ] = {
-
                                     "status": "error",
-
                                     "same_transaction": None,
-
                                     "confidence": 0,
-
                                     "reasoning": str(e)
                                 }
 
@@ -586,8 +782,11 @@ if (
                                 st.rerun()
 
 
-    st.divider()
+    # ============================================================
+    # ANOMALY DETECTION
+    # ============================================================
 
+    st.divider()
 
     st.subheader(
         "Anomaly Detection"
@@ -633,7 +832,10 @@ if (
                 f"{bank_ref} — {reason}"
             ):
 
+                # SOURCE DATA
+
                 col1, col2 = st.columns(2)
+
 
                 with col1:
 
@@ -647,6 +849,7 @@ if (
                         f"{row['date']}"
                     )
 
+
                 with col2:
 
                     st.write(
@@ -659,6 +862,8 @@ if (
                         f"{reason}"
                     )
 
+
+                # AUDIT TRAIL
 
                 st.divider()
 
@@ -678,9 +883,40 @@ if (
                             "AI anomaly review completed."
                         )
 
+
+                        confidence = anomaly_result.get(
+                            "confidence",
+                            0
+                        )
+
+
+                        try:
+
+                            confidence = float(
+                                confidence
+                            )
+
+                        except (TypeError, ValueError):
+
+                            confidence = 0
+
+
+                        confidence = max(
+                            0,
+                            min(
+                                100,
+                                confidence
+                            )
+                        )
+
+
                         st.write(
                             f"**AI Confidence:** "
-                            f"{anomaly_result['confidence']}%"
+                            f"{confidence:.0f}%"
+                        )
+
+                        st.progress(
+                            confidence / 100
                         )
 
                         st.write(
@@ -727,15 +963,12 @@ if (
                                 st.session_state.anomaly_results[
                                     anomaly_key
                                 ] = {
-
                                     "status": "success",
-
                                     "confidence":
                                         ai_result.get(
                                             "confidence",
                                             0
                                         ),
-
                                     "explanation":
                                         ai_result.get(
                                             "explanation",
@@ -752,11 +985,8 @@ if (
                                 st.session_state.anomaly_results[
                                     anomaly_key
                                 ] = {
-
                                     "status": "error",
-
                                     "confidence": 0,
-
                                     "explanation": str(e)
                                 }
 
@@ -764,8 +994,11 @@ if (
                                 st.rerun()
 
 
-    st.divider()
+    # ============================================================
+    # CASH RUNWAY FORECAST
+    # ============================================================
 
+    st.divider()
 
     st.subheader(
         "Cash Runway Forecast"
@@ -800,7 +1033,6 @@ if (
         )
 
 
-        # FIXED: Show Net Flow when cash flow is positive
         if runway["avg_daily_net"] >= 0:
 
             col2.metric(
@@ -871,7 +1103,7 @@ if (
 
         st.plotly_chart(
             fig,
-            use_container_width=True
+            width="stretch"
         )
 
 
@@ -881,8 +1113,11 @@ if (
         )
 
 
-    st.divider()
+    # ============================================================
+    # UNMATCHED TRANSACTIONS
+    # ============================================================
 
+    st.divider()
 
     st.subheader(
         "Unmatched ledger transaction IDs"
