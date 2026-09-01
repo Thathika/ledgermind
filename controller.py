@@ -16,16 +16,27 @@ model = genai.GenerativeModel("gemini-3.6-flash")
 
 
 def build_summary(reconciliation_result, anomaly_count, forecast_result):
+    """
+    All numeric values are explicitly cast to native Python types.
+    forecast.py's calculations use pandas/numpy, which return numpy
+    scalar types (e.g. numpy.int64) that look like normal numbers but
+    are NOT JSON-serializable — this caused a real bug when an
+    edge-case dataset produced a negative-runway value for the first
+    time, breaking json.dumps() in both history.py and the diff logic
+    below.
+    """
+    runway_days = forecast_result["runway_days"]
+
     return {
-        "matched": len(reconciliation_result["matched"]),
-        "ambiguous": len(reconciliation_result["ambiguous"]),
-        "unmatched_ledger": len(reconciliation_result["unmatched_ledger"]),
-        "unmatched_bank": len(reconciliation_result["unmatched_bank"]),
-        "anomalies_flagged": anomaly_count,
-        "current_balance": forecast_result["current_balance"],
-        "avg_daily_net": forecast_result["avg_daily_net"],
-        "daily_burn": forecast_result["daily_burn"],
-        "runway_days": forecast_result["runway_days"]
+        "matched": int(len(reconciliation_result["matched"])),
+        "ambiguous": int(len(reconciliation_result["ambiguous"])),
+        "unmatched_ledger": int(len(reconciliation_result["unmatched_ledger"])),
+        "unmatched_bank": int(len(reconciliation_result["unmatched_bank"])),
+        "anomalies_flagged": int(anomaly_count),
+        "current_balance": float(forecast_result["current_balance"]),
+        "avg_daily_net": float(forecast_result["avg_daily_net"]),
+        "daily_burn": float(forecast_result["daily_burn"]),
+        "runway_days": int(runway_days) if runway_days is not None else None
     }
 
 
@@ -121,10 +132,16 @@ Do not include a preamble.
         return _fallback_briefing(summary)
 
 
-def generate_change_narrative(previous_summary, current_summary):
+def generate_diff_narrative(current_summary, previous_summary):
     """
-    Compare the previous dashboard run with the current run
-    and generate a short plain-English explanation of what changed.
+    Compares the current dashboard run against the previous run and
+    generates a short plain-English explanation of what changed.
+
+    IMPORTANT: parameter order is (current_summary, previous_summary)
+    to match how app.py calls this function. A previous version of
+    this file only defined generate_change_narrative(previous, current)
+    — the opposite order — which meant app.py's fallback import alias
+    was silently swapping current and previous in every comparison.
     """
 
     if previous_summary is None:
@@ -275,6 +292,11 @@ Requirements:
     return " ".join(changes)
 
 
+# Backward-compatible alias, in case any other code still imports
+# the old name directly.
+generate_change_narrative = generate_diff_narrative
+
+
 if __name__ == "__main__":
 
     fake_previous_summary = {
@@ -319,8 +341,8 @@ if __name__ == "__main__":
 
     print("\nWhat Changed:")
     print(
-        generate_change_narrative(
-            fake_previous_summary,
-            fake_current_summary
+        generate_diff_narrative(
+            fake_current_summary,
+            fake_previous_summary
         )
     )

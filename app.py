@@ -7,14 +7,12 @@ from ai_resolver import resolve_ambiguous
 from anomaly_detector import flag_candidates, explain_anomaly
 from data_cleaning import clean_data
 from forecast import calculate_runway
+from qa_agent import answer_question
 
 from controller import build_summary, generate_briefing
 
 
-try:
-    from controller import generate_diff_narrative
-except ImportError:
-    from controller import generate_change_narrative as generate_diff_narrative
+from controller import generate_diff_narrative
 
 from alerts import evaluate_alerts
 
@@ -31,7 +29,29 @@ st.set_page_config(
 )
 
 
+# ============================================================
+# SIDEBAR — persistent at-a-glance summary
+# ============================================================
+
+with st.sidebar:
+    st.header("LedgerMind")
+    st.caption("AI Finance Controller")
+
+    if (
+        "reconciliation_result" in st.session_state
+        and st.session_state.reconciliation_result is not None
+    ):
+        result_sidebar = st.session_state.reconciliation_result
+        st.metric("Matched", len(result_sidebar["matched"]))
+        st.metric("Ambiguous", len(result_sidebar["ambiguous"]))
+        st.metric(
+            "Unmatched",
+            len(result_sidebar["unmatched_ledger"]) + len(result_sidebar["unmatched_bank"])
+        )
+
+
 st.title("LedgerMind — AI Finance Controller")
+st.caption("Powered by Gemini 3.6 Flash · Rule-based reconciliation engine · SQLite run history")
 
 st.write(
     "Upload your ledger and bank statement to run reconciliation."
@@ -63,6 +83,9 @@ if "diff_narrative" not in st.session_state:
 
 if "history_save_pending" not in st.session_state:
     st.session_state.history_save_pending = False
+
+if "chat_history" not in st.session_state:
+    st.session_state.chat_history = []
 
 
 if st.button("Run Reconciliation"):
@@ -122,6 +145,7 @@ if st.button("Run Reconciliation"):
             st.session_state.ai_results = {}
             st.session_state.anomaly_results = {}
             st.session_state.history_save_pending = False
+            st.session_state.chat_history = []
 
             st.error(
                 "One of the files is missing required columns "
@@ -143,6 +167,7 @@ if st.button("Run Reconciliation"):
             st.session_state.anomaly_results = {}
             st.session_state.briefing = None
             st.session_state.diff_narrative = None
+            st.session_state.chat_history = []
 
             st.session_state.history_save_pending = True
 
@@ -376,18 +401,18 @@ if (
 
 
     # ============================================================
-    # FINANCIAL BRIEFING
+    # CONTROLLER BRIEFING
     # ============================================================
 
     st.divider()
 
-    st.subheader("Financial Briefing")
+    st.subheader("Controller Briefing")
 
 
     if runway is None:
 
         st.warning(
-            "Financial briefing unavailable because the "
+            "Controller briefing unavailable because the "
             "cash runway forecast could not be generated."
         )
 
@@ -422,6 +447,76 @@ if (
 
         st.info(
             st.session_state.briefing
+        )
+
+
+    # ============================================================
+    # DAY 9 - CONTROLLER COPILOT
+    # ============================================================
+
+    st.divider()
+
+    st.subheader("Controller Copilot")
+
+    st.caption(
+        "Ask questions about this run's financial data. Powered by Gemini."
+    )
+
+
+    if runway is not None:
+
+        chat_context = build_summary(
+            result,
+            len(candidates),
+            runway
+        )
+
+        chat_context["briefing"] = st.session_state.briefing
+
+
+        for msg in st.session_state.chat_history:
+
+            with st.chat_message(msg["role"]):
+
+                st.write(msg["content"])
+
+
+        user_question = st.chat_input(
+            "Ask about your finances, e.g. 'why is runway a concern?'"
+        )
+
+
+        if user_question:
+
+            st.session_state.chat_history.append(
+                {"role": "user", "content": user_question}
+            )
+
+            with st.chat_message("user"):
+
+                st.write(user_question)
+
+
+            with st.chat_message("assistant"):
+
+                with st.spinner("Thinking..."):
+
+                    answer = answer_question(
+                        user_question,
+                        chat_context
+                    )
+
+                    st.write(answer)
+
+
+            st.session_state.chat_history.append(
+                {"role": "assistant", "content": answer}
+            )
+
+    else:
+
+        st.info(
+            "Copilot is unavailable until the cash runway forecast can be generated."
         )
 
 
@@ -518,13 +613,13 @@ if (
 
 
     # ============================================================
-    # AMBIGUOUS TRANSACTIONS - AI REVIEW
+    # RECONCILIATION — AI REVIEW
     # ============================================================
 
     st.divider()
 
     st.subheader(
-        "Ambiguous transactions — AI review"
+        "Reconciliation — AI Review"
     )
 
 
@@ -783,13 +878,13 @@ if (
 
 
     # ============================================================
-    # ANOMALY DETECTION
+    # ANOMALY GUARD
     # ============================================================
 
     st.divider()
 
     st.subheader(
-        "Anomaly Detection"
+        "Anomaly Guard"
     )
 
 
@@ -995,13 +1090,13 @@ if (
 
 
     # ============================================================
-    # CASH RUNWAY FORECAST
+    # RUNWAY & BURN
     # ============================================================
 
     st.divider()
 
     st.subheader(
-        "Cash Runway Forecast"
+        "Runway & Burn"
     )
 
 

@@ -1,0 +1,3 @@
+transaction_id,date,description,amount
+LED0001,2026-07-05,AWS invoice,-4500
+LED0002,2026-07-06,Salary payout,not-a-number
